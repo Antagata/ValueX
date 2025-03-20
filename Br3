@@ -1,0 +1,103 @@
+import pandas as pd
+import xlsxwriter
+
+def find_storage_bins(valuex_path, ana_path, dep_range_path, output_path="assigned_bins.xlsx"):
+    # Load the Excel files
+    valuex_xls = pd.ExcelFile(valuex_path)
+    ana_xls = pd.ExcelFile(ana_path)
+    dep_range_xls = pd.ExcelFile(dep_range_path)
+    
+    # Read the necessary sheets
+    valuex_df = pd.read_excel(valuex_xls, sheet_name="ValueX")
+    lx29_df = pd.read_excel(ana_xls, sheet_name="LX29")
+    ana_df = pd.read_excel(ana_xls, sheet_name="ANA")
+    dep_range_df = pd.read_excel(dep_range_xls, sheet_name="Sheet1")
+    
+    # Extract Value X data
+    materials = valuex_df.iloc[:, 0]  # Assuming materials are in the first column
+    values_x = valuex_df.iloc[:, 3]  # Column D (0-based index = 3)
+    
+    # Extract bin values from "LX29"
+    bins = lx29_df.iloc[:, 1].dropna().unique().tolist()  # Column B (pck)
+    
+    # Extract bin volumes from "ANA"
+    ana_bins = ana_df.iloc[:, 0]  # Column A (bin names)
+    ana_volumes = ana_df.iloc[:, 6]  # Column G (volumes)
+    
+    # Create a dictionary mapping bins to their volumes
+    bin_volume_map = {b: v for b, v in zip(ana_bins, ana_volumes) if isinstance(v, (int, float))}
+    
+    # Extract department and material group from "Dep_range_1"
+    material_department_map = dict(zip(dep_range_df.iloc[:, 0], dep_range_df.iloc[:, 1]))  # Column A -> Column B (Material -> Department)
+    material_group_map = dict(zip(dep_range_df.iloc[:, 0], dep_range_df.iloc[:, 1]))  # Column A -> Column B (Material -> Material Group)
+    dep_range_columns = dep_range_df.iloc[:, 37:45]  # Columns AL to AS (Bin selection formulas)
+    
+    # Create a dictionary to store material to assigned bin mapping
+    material_bin_map = {}
+    used_bins = set()
+    
+    # Assign one bin per material, prioritizing volume first, then department range, then nearest to Material Group
+    for material, value_x in zip(materials, values_x):
+        department = material_department_map.get(material, None)
+        material_group = material_group_map.get(material, None)
+        possible_bins = []
+        
+        # Prioritize bins with enough volume
+        sorted_bins = sorted(bin_volume_map.keys(), key=lambda b: bin_volume_map[b], reverse=True)
+        possible_bins = [b for b in sorted_bins if b not in used_bins and bin_volume_map.get(b, 0) > value_x]
+        
+        # Select the first available bin
+        assigned_bin = None
+        for bin_name in possible_bins:
+            if bin_name not in used_bins:
+                assigned_bin = bin_name
+                used_bins.add(bin_name)
+                break
+        
+        # If no suitable bin by volume, use department-based selection
+        if not assigned_bin and department:
+            dep_ranges = dep_range_columns.loc[dep_range_df.iloc[:, 1] == department].values.flatten()
+            for bin_name in dep_ranges:
+                if bin_name in bin_volume_map and bin_volume_map[bin_name] > value_x and bin_name not in used_bins:
+                    assigned_bin = bin_name
+                    used_bins.add(bin_name)
+                    break
+        
+        # If still no bin, assign the closest available bin based on Material Group
+        if not assigned_bin and material_group:
+            for bin_name in bins:
+                if bin_name in bin_volume_map and bin_volume_map[bin_name] > value_x and bin_name not in used_bins:
+                    assigned_bin = bin_name
+                    used_bins.add(bin_name)
+                    break
+        
+        material_bin_map[material] = (assigned_bin, material_group)
+    
+    # Convert result into a DataFrame
+    result_df = pd.DataFrame([(mat, bin_grp[1], bin_grp[0]) for mat, bin_grp in material_bin_map.items()], 
+                             columns=["Material", "Material Group", "Assigned Bin"])
+    
+    # Save the result to an Excel file with formatting
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        result_df.to_excel(writer, sheet_name="Assigned_Bins", index=False)
+        workbook = writer.book
+        worksheet = writer.sheets["Assigned_Bins"]
+        
+        # Define format for circling assigned bins
+        cell_format = workbook.add_format({'border': 2, 'border_color': 'red'})
+        
+        # Apply formatting to all assigned bins
+        for row in range(1, len(result_df) + 1):  # +1 to skip header
+            worksheet.write(row, 2, result_df.iloc[row - 1, 2], cell_format)
+    
+    return result_df
+
+# Example usage
+valuex_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/ValueX.xlsx"
+ana_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/ANAs__location_service_rev2.xlsm"
+dep_range_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/Dep_range_1.xlsx"
+output_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/assigned_bins.xlsx"
+result = find_storage_bins(valuex_path, ana_path, dep_range_path, output_path)
+
+# To display the result in the notebook
+result
