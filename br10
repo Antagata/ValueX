@@ -1,0 +1,102 @@
+import pandas as pd
+import xlsxwriter
+
+def is_in_range(material_group, bin_code):
+    range_conditions = {
+        15: ("11-01-A", "15-60-G"),
+        27: ("22-01-A", "28-60-G"),
+        25: ("29-01-A", "35-58-G"),
+        30: ("01-01-A", "04-60-G"),
+        20: ("16-01-A", "19-60-G"),
+        45: ("05-01-A", "08-60-G"),
+        9: [("09-31-A", "09-60-G"), ("10-01-A", "10-30-G")],
+        10: [("09-01-A", "09-30-G"), ("10-31-A", "10-60-G")]
+    }
+    
+    bin_code = str(bin_code)  # Ensure bin_code is a string for comparison
+    
+    if material_group in range_conditions:
+        ranges = range_conditions[material_group]
+        if isinstance(ranges, tuple):
+            return ranges[0] <= bin_code <= ranges[1]
+        else:
+            return any(r[0] <= bin_code <= r[1] for r in ranges)
+    return False
+
+def find_storage_bins(valuex_path, ana_path, dep_range_path, output_path="assigned_bins.xlsx"):
+    valuex_xls = pd.ExcelFile(valuex_path)
+    ana_xls = pd.ExcelFile(ana_path)
+    dep_range_xls = pd.ExcelFile(dep_range_path)
+    
+    valuex_df = pd.read_excel(valuex_xls, sheet_name="ValueX")
+    lx29_df = pd.read_excel(ana_xls, sheet_name="LX29")
+    ana_df = pd.read_excel(ana_xls, sheet_name="ANA")
+    dep_range_df = pd.read_excel(dep_range_xls, sheet_name="Sheet1")
+    
+    materials = valuex_df.iloc[:, 0]
+    values_x = valuex_df.iloc[:, 3]
+    available_bins = lx29_df.iloc[:, 1].dropna().unique().tolist()
+    
+    ana_bins = ana_df.iloc[:, 0]
+    ana_volumes = ana_df.iloc[:, 6]
+    bin_types = dict(zip(ana_df.iloc[:, 0], ana_df.iloc[:, 1]))
+    
+    assigned_bins_map = dict(zip(dep_range_df.iloc[:, 0], dep_range_df.iloc[:, 28]))
+    material_group_map = dict(zip(dep_range_df.iloc[:, 0], dep_range_df.iloc[:, 1]))
+    
+    bin_volume_map = {b: v for b, v in zip(ana_bins, ana_volumes) if isinstance(v, (int, float))}
+    
+    material_bin_map = {}
+    used_bins = set()
+    
+    for material, value_x in zip(materials, values_x):
+        material_group = material_group_map.get(material, "Unknown")
+        if material in assigned_bins_map and pd.notna(assigned_bins_map[material]):
+            material_bin_map[material] = (material_group, assigned_bins_map[material], "Already")
+            continue
+        
+        possible_bins = [b for b in available_bins if b in bin_volume_map and bin_volume_map[b] >= value_x]
+        
+        assigned_bin = None
+        for bin_name in sorted(possible_bins, key=lambda b: abs(bin_volume_map[b] - value_x)):
+            if bin_name not in used_bins and is_in_range(material_group, bin_name):
+                assigned_bin = bin_name
+                used_bins.add(bin_name)
+                break
+        
+        status = "Assigned"
+        if not assigned_bin:
+            for bin_name in sorted(possible_bins, key=lambda b: abs(bin_volume_map[b] - value_x)):
+                if bin_name not in used_bins:
+                    assigned_bin = bin_name
+                    used_bins.add(bin_name)
+                    status = "Forced Assignment"
+                    break
+        
+        material_bin_map[material] = (material_group, assigned_bin if assigned_bin else "None", status)
+    
+    result_df = pd.DataFrame([(mat, bin_grp[0], bin_grp[1], bin_types.get(bin_grp[1], "Unknown"), bin_grp[2]) 
+                              for mat, bin_grp in material_bin_map.items()], 
+                             columns=["Material", "Material Group", "Assigned Bin", "Type", "Status"])
+    
+    result_df["Too Big"] = result_df.apply(lambda row: "Yes" if row["Assigned Bin"] != "None" and bin_volume_map.get(row["Assigned Bin"], float("inf")) < values_x[materials == row["Material"]].values[0] else "No", axis=1)
+    
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        result_df.to_excel(writer, sheet_name="Assigned_Bins", index=False)
+        workbook = writer.book
+        worksheet = writer.sheets["Assigned_Bins"]
+        red_format = workbook.add_format({'bg_color': 'red'})
+        
+        for row in range(1, len(result_df) + 1):
+            if result_df.iloc[row - 1, 5] == "Yes":
+                worksheet.write(row, 2, result_df.iloc[row - 1, 2], red_format)
+    
+    return result_df
+
+valuex_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/ValueX.xlsx"
+ana_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/ANAs__location_service_rev2.xlsm"
+dep_range_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/Dep_range_1.xlsx"
+output_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder link/assigned_bins.xlsx"
+result = find_storage_bins(valuex_path, ana_path, dep_range_path, output_path)
+
+result
