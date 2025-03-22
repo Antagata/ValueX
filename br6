@@ -3,7 +3,7 @@ import xlsxwriter
 
 def is_in_range(material_group, bin_code):
     range_conditions = {
-        15: ("20-01-A", "21-60-G"),
+        15: ("11-01-A", "15-60-G"),
         27: ("22-01-A", "28-60-G"),
         25: ("29-01-A", "35-58-G"),
         30: ("01-01-A", "04-60-G"),
@@ -97,3 +97,4 @@ output_path = "P:/Mark Africa/6_WOODIES/Woodies macros by Mark/PYTHON folder lin
 result = find_storage_bins(valuex_path, ana_path, dep_range_path, output_path)
 
 result
+
