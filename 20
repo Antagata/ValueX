@@ -74,6 +74,11 @@ def find_storage_bins(valuex_path, ana_path, dep_range_path, output_path="assign
         wm_unit = wm_unit_map.get(material, "N/A")
         storage_type = bin_storage_types.get(material, "N/A")
         
+        # Skip assignment if WM Unit is "PAL"
+        if wm_unit == "PAL":
+            material_bin_map[material] = (material_description, material_group, "None", "Skipped (PAL)", "No", pick_frequency, wm_unit, storage_type, lt23, value_x, weight)
+            continue
+        
         if material in assigned_bins_map and pd.notna(assigned_bins_map[material]):
             material_bin_map[material] = (material_description, material_group, assigned_bins_map[material], "Already", "No", pick_frequency, wm_unit, storage_type, lt23, value_x, weight)
             continue
