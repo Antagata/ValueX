@@ -1,0 +1,152 @@
+import pandas as pd
+import xlsxwriter
+
+def is_in_range(material_group, bin_code, range_conditions):
+    bin_code = str(bin_code)
+    if material_group in range_conditions:
+        ranges = range_conditions[material_group]
+        if isinstance(ranges, tuple):
+            return ranges[0] <= bin_code <= ranges[1]
+        else:
+            return any(r[0] <= bin_code <= r[1] for r in ranges)
+    return False
+
+def find_closest_bin(bin_candidates, used_bins, value_x):
+    for bin_name in sorted(bin_candidates, key=lambda b: abs(bin_candidates[b] - value_x)):
+        if bin_name not in used_bins:
+            return bin_name
+    return None
+
+def normalize_storage_type(value):
+    try:
+        return int(value)
+    except:
+        return value
+
+def find_storage_bins(valuex_path, ana_path, zmat_path, output_path="assigned_bins.xlsx"):
+    valuex_df = pd.read_excel(valuex_path, sheet_name="ValueX")
+    lx29_df = pd.read_excel(ana_path, sheet_name="LX29")
+    ana_df = pd.read_excel(ana_path, sheet_name="ANA")
+    zmat_df = pd.read_excel(zmat_path, sheet_name="Sheet1")
+
+    materials = valuex_df.iloc[:, 0]
+    lt23_mb51 = valuex_df.iloc[:, 2]
+    values_x = valuex_df.iloc[:, 3]
+    weights = valuex_df.iloc[:, 4]
+    pick_frequencies = valuex_df.iloc[:, 5]
+
+    sorted_indices = pick_frequencies.argsort()[::-1]
+    materials, lt23_mb51, values_x, weights, pick_frequencies = (
+        materials.iloc[sorted_indices],
+        lt23_mb51.iloc[sorted_indices],
+        values_x.iloc[sorted_indices],
+        weights.iloc[sorted_indices],
+        pick_frequencies.iloc[sorted_indices]
+    )
+
+    material_descriptions = dict(zip(zmat_df.iloc[:, 0], zmat_df.iloc[:, 2]))  # A -> C
+    material_group_map = dict(zip(zmat_df.iloc[:, 0], zmat_df.iloc[:, 1]))     # A -> B
+    assigned_bins_map = dict(zip(zmat_df.iloc[:, 0], zmat_df.iloc[:, 28]))     # A -> AC
+    wm_unit_map = dict(zip(zmat_df.iloc[:, 0], zmat_df.iloc[:, 18]))           # A -> S
+
+    available_bins = lx29_df.iloc[:, 1].dropna().unique().tolist()
+    ana_bins = ana_df.iloc[:, 0]
+    ana_types = ana_df.iloc[:, 1].apply(normalize_storage_type)
+    bin_storage_types = dict(zip(ana_bins, ana_types))
+    ana_volumes = ana_df.iloc[:, 6]
+    bin_volume_map = {b: v for b, v in zip(ana_bins, ana_volumes) if isinstance(v, (int, float))}
+
+    range_conditions = {
+        30: ("01-01-A", "04-60-G"),
+        45: ("05-01-A", "08-60-G"),
+        9: [("09-31-A", "09-60-G"), ("10-01-A", "10-30-G")],
+        10: [("09-01-A", "09-30-G"), ("10-31-A", "10-60-G")],
+        15: ("11-01-A", "15-60-G"),
+        20: ("16-01-A", "19-60-G"),
+        25: ("29-01-A", "35-58-G"),
+        27: ("22-01-A", "28-60-G"),    
+        "long": ("21-01-A", "21-60-G"),
+        "Oversize": ("36-01-A", "38-60-G")  # Add the Oversize range
+    }
+
+    material_bin_map = {}
+    used_bins = set()
+
+    for material, lt23, value_x, weight, pick_frequency in zip(materials, lt23_mb51, values_x, weights, pick_frequencies):
+        material_group = material_group_map.get(material, "Unknown")
+        material_description = material_descriptions.get(material, "N/A")
+        wm_unit = wm_unit_map.get(material, "N/A")
+
+        if wm_unit == "PAL":
+            material_bin_map[material] = (material_description, material_group, "None", "Skipped (PAL)", "No", pick_frequency, wm_unit, "N/A", lt23, value_x, weight)
+            continue
+
+        if material in assigned_bins_map and pd.notna(assigned_bins_map[material]):
+            assigned_bin = assigned_bins_map[material]
+            assigned_type = bin_storage_types.get(assigned_bin, "N/A")
+            material_bin_map[material] = (material_description, material_group, assigned_bin, "Already", "No", pick_frequency, wm_unit, assigned_type, lt23, value_x, weight)
+            continue
+
+        # Check if material is oversize (based on value_x)
+        if value_x > 100:  # Assuming oversize condition is based on value_x > 100
+            possible_bins = {b: bin_volume_map[b] for b in available_bins if b in bin_volume_map and bin_volume_map[b] >= value_x and b not in used_bins}
+
+            # First, check for bins in "long" range
+            preferred_bins = [b for b in possible_bins if is_in_range(material_group, b, range_conditions["long"])]
+            if not preferred_bins:  # If no bins found in "long" range, use "Oversize" range
+                preferred_bins = [b for b in possible_bins if is_in_range(material_group, b, range_conditions["Oversize"])]
+        else:
+            possible_bins = {b: bin_volume_map[b] for b in available_bins if b in bin_volume_map and bin_volume_map[b] >= value_x and b not in used_bins}
+            preferred_bins = [b for b in possible_bins if is_in_range(material_group, b, range_conditions)]
+            other_bins = [b for b in possible_bins if b not in preferred_bins]
+            preferred_bins += other_bins
+
+        assigned_bin = None
+        for bin_name in preferred_bins:
+            if weight > 10 and bin_storage_types.get(bin_name) != 101:
+                continue
+            assigned_bin = bin_name
+            used_bins.add(bin_name)
+            break
+
+        status = "Assigned" if assigned_bin else "Forced Assignment"
+        if not assigned_bin:
+            assigned_bin = find_closest_bin(possible_bins, used_bins, value_x)
+            if assigned_bin:
+                used_bins.add(assigned_bin)
+
+        too_big = "No"
+        if assigned_bin and bin_volume_map.get(assigned_bin, float("inf")) < value_x:
+            too_big = "Yes"
+        elif weight > 10 and bin_storage_types.get(assigned_bin) != 101:
+            too_big = "Overweight"
+
+        assigned_type = bin_storage_types.get(assigned_bin, "N/A") if assigned_bin else "N/A"
+
+        material_bin_map[material] = (material_description, material_group, assigned_bin if assigned_bin else "None", status, too_big, pick_frequency, wm_unit, assigned_type, lt23, value_x, weight)
+
+    result_df = pd.DataFrame(
+        [(mat, *bin_grp) for mat, bin_grp in material_bin_map.items()], 
+        columns=["Material", "Material Description", "Material Group", "Assigned Bin", "Status", "Too Big", "Pick Frequency", "WM Unit", "Storage Type", "LT23/MB51", "ValueX", "Weight"]
+    )
+
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        result_df.to_excel(writer, sheet_name="Assigned_Bins", index=False)
+        workbook = writer.book
+        worksheet = writer.sheets["Assigned_Bins"]
+        red_format = workbook.add_format({'bg_color': 'red'})
+
+        for row in range(1, len(result_df) + 1):
+            if result_df.iloc[row - 1, 5] in ["Yes", "Overweight"]:
+                worksheet.write(row, 4, result_df.iloc[row - 1, 4], red_format)
+
+    return result_df
+
+# File paths
+valuex_path = "C:\\Users\\marco.africana\\Desktop\\Project BOOST\\Assign Bins\\ValueX__________5.xlsx"
+ana_path = "C:\\Users\\marco.africana\\Desktop\\Project BOOST\\Assign Bins\\ANAs__location_service_1.xlsm"
+zmat_path = "C:\\Users\\marco.africana\\Desktop\\Project BOOST\\ZMAT_0.xlsx"
+output_path = "C:\\Users\\marco.africana\\Desktop\\Project BOOST\\Assign Bins\\assigned_X.xlsx"
+
+result = find_storage_bins(valuex_path, ana_path, zmat_path, output_path)
+print(result)
