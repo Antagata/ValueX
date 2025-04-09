@@ -1,0 +1,60 @@
+let
+    // Load the Excel file and select "Sheet1"
+    Source = Excel.Workbook(File.Contents("C:\Users\marco.africana\Desktop\Project BOOST\LT23_1.xlsx"), null, true),
+    Sheet = Source{[Item="Sheet1", Kind="Sheet"]}[Data],
+
+    // Promote headers to use actual column names
+    PromotedHeaders = Table.PromoteHeaders(Sheet, [PromoteAllScalars=true]),
+
+    // Ensure correct column types
+    ChangedTypes = Table.TransformColumnTypes(PromotedHeaders, {{"Material", type text}, 
+                                                                {"Source target qty", type number}}),
+
+    // Group by 'Material' and calculate the averages for 'Source target qty'
+    GroupedTable = Table.Group(ChangedTypes, {"Material"}, 
+        {
+            {"Avg_Source_Target_Qty", each List.Average([Source target qty]), type number}
+        }),
+
+    // Merge back the calculated averages to the original table
+    MergedTable = Table.NestedJoin(ChangedTypes, "Material", GroupedTable, "Material", "GroupedData", JoinKind.LeftOuter),
+
+    // Expand the merged column to include the calculated averages
+    ExpandedTable = Table.ExpandTableColumn(MergedTable, "GroupedData", {"Avg_Source_Target_Qty"}),
+
+    // Add a new column that rounds up the 'Avg_Source_Target_Qty' values
+    AddedRoundedSourceTargetQtyColumn = Table.AddColumn(ExpandedTable, "Rounded_Avg_Source_Target_Qty", each Number.RoundUp([Avg_Source_Target_Qty], 0), type number),
+
+    // Group by 'Material' again to find the maximum 'Rounded_Avg_Source_Target_Qty' for each material
+    MaxGroupedTable = Table.Group(AddedRoundedSourceTargetQtyColumn, {"Material"}, 
+        {
+            {"Max_Rounded_Avg_Source_Target_Qty", each List.Max([Rounded_Avg_Source_Target_Qty]), type number}
+        }),
+
+    // Merge the max values back to the original table
+    FinalMergedTable = Table.NestedJoin(AddedRoundedSourceTargetQtyColumn, "Material", MaxGroupedTable, "Material", "MaxGroupedData", JoinKind.LeftOuter),
+
+    // Expand the merged column to include the max value
+    FinalExpandedTable = Table.ExpandTableColumn(FinalMergedTable, "MaxGroupedData", {"Max_Rounded_Avg_Source_Target_Qty"}),
+
+    // Load the second Excel file (ZMAT.xlsx)
+    Source2 = Excel.Workbook(File.Contents("C:\Users\marco.africana\Desktop\Project BOOST\ZMAT_0.xlsx"), null, true),
+    Sheet2 = Source2{[Item="Sheet1", Kind="Sheet"]}[Data], // Use the correct sheet name
+
+    // Promote headers for the second sheet
+    PromotedHeaders2 = Table.PromoteHeaders(Sheet2, [PromoteAllScalars=true]),
+
+    // Perform a VLOOKUP-like join with the new table
+    LookupTable = Table.NestedJoin(FinalExpandedTable, "Material", PromotedHeaders2, "Material", "LookupData", JoinKind.LeftOuter),
+
+    // Expand the joined table to include the desired column 'Numerator_3'
+    FinalTable = Table.ExpandTableColumn(LookupTable, "LookupData", {"Numerator_3"}, {"ReturnedValue"}),
+
+    // Add a new column that divides Max_Rounded_Avg_Source_Target_Qty by ReturnedValue and rounds up the result
+    AddedDivisionColumn = Table.AddColumn(FinalTable, "Rounded_Division", each 
+        if [ReturnedValue] <> 0 then Number.RoundUp([Max_Rounded_Avg_Source_Target_Qty] / [ReturnedValue], 0) 
+        else null, 
+        type number),
+    #"Reordered Columns" = Table.ReorderColumns(AddedDivisionColumn,{"Transfer Order Number", "Transfer order item", "Material", "Rounded_Division", "Stock Category", "Special Stock", "Source Storage Type", "Source Storage Bin", "Source target qty", "Material Description", "Alternative Unit of Measure", "User", "Confirmation status", "Confirmation time", "Confirmation date", "Source storage unit", "SLED/BBD", "Dest.storage unit", "Item to subsystem", "Plant", "Batch", "Creation Date", "Filler", "Dest. Storage Type", "Dest.Storage Bin", "Dest.target quantity", "Filler_1", "Confirmation status source/dest.", "Filler_2", "Return storage type", "Return storage bin", "Return target qty.", "Avg_Source_Target_Qty", "Rounded_Avg_Source_Target_Qty", "Max_Rounded_Avg_Source_Target_Qty", "ReturnedValue"})
+in
+    #"Reordered Columns"
